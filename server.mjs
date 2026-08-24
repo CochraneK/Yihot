@@ -8,7 +8,8 @@ import { URL, fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 function boundedNumber(value, fallback, minimum) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.max(minimum, parsed) : fallback; }
-const PORT = boundedNumber(process.env.YIHOT_PORT ?? process.env.CIVIC_RADAR_PORT, 8790, 1);
+const PORT = boundedNumber(process.env.YIHOT_PORT ?? process.env.SCF_SERVER_PORT ?? process.env.PORT ?? process.env.CIVIC_RADAR_PORT, 8790, 1);
+const HOST = process.env.YIHOT_HOST || "127.0.0.1";
 const MAX_BYTES = 700_000;
 const TIMEOUT_MS = boundedNumber(process.env.YIHOT_TIMEOUT_MS ?? process.env.CIVIC_RADAR_TIMEOUT_MS, 8000, 1000);
 const REFRESH_INTERVAL_MS = boundedNumber(process.env.YIHOT_REFRESH_MS ?? process.env.CIVIC_RADAR_REFRESH_MS, 60_000, 15_000);
@@ -229,6 +230,7 @@ async function serveStatic(req, res) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    url.pathname = url.pathname.replace(/^\/yihotApi(?=\/|$)/, ""); // CloudBase 网关路径前缀
     if (url.pathname === "/api/stream") {
       await snapshotForRequest(false);
       res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
