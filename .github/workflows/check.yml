@@ -46,11 +46,22 @@ jobs:
 
       - name: Source registry audit (offline, no third-party calls)
         run: npm run sources:audit:check
+      - name: GitHub Actions workflow syntax (offline)
+        # A workflow with a YAML error never creates a job and fails silently at parse time —
+        # exactly what disabled the drift audit after it shipped. Parse every workflow with Ruby's
+        # stdlib so the check fails here instead of the automation going dark unnoticed.
+        run: |
+          ruby -ryaml -e 'Dir.glob(".github/workflows/*.yml").sort.each { |f| YAML.safe_load(File.read(f), aliases: true); puts "ok #{f}" }'
       - name: AIHOT derivative discovery safety tests (offline, no external requests)
         run: |
           node --check scripts/lib/aihot-derivatives.mjs
           node --check scripts/scan-aihot-derivatives.mjs
           node --test tests/aihot-derivatives.test.mjs
+      - name: Upstream drift audit verdict rules (offline)
+        run: |
+          node --check scripts/audit-upstream-drift.mjs
+          node --check scripts/post-upstream-drift-issue.mjs
+          node scripts/audit-upstream-drift.mjs --self-test
       - name: Release notes check (offline)
         # latestVersion drives the sidebar dot and the page renders the array unsorted,
         # so a missing bump or a bottom-appended entry fails here instead of going unnoticed.
