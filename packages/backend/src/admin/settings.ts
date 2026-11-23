@@ -58,9 +58,31 @@ export async function listBudgets() {
     FROM budgets b ORDER BY b.service`;
 }
 
-export async function updateBudget(service: string, input: { perMinute: number; perHour: number; perDay: number; reason: string }, actor: string) {
-  if (!input.reason?.trim()) throw new Error("reason is required");
-  for (const v of [input.perMinute, input.perHour, input.perDay]) if (!Number.isInteger(v) || v < 0) throw new Error("budgets are non-negative integers (0 stops the service)");
+const badRequest = (detail: string) => Object.assign(new Error(detail), { statusCode: 400 });
+
+/** Pure guard shared with tests: rejects non-zero caps that would trip the rolling circuit breaker immediately unless `force` is set. */
+export function validateBudgetFloor(
+  input: { perMinute: number; perHour: number; perDay: number; force?: boolean },
+  usage: { usedHour: number; usedDay: number },
+): void {
+  if (input.force) return;
+  if (input.perDay > 0 && input.perDay <= usage.usedDay) {
+    throw badRequest(`新日上限（${input.perDay}）不高于过去 24 小时已用量（${usage.usedDay}），保存后会立即触发熔断锁停服务；如确认立即生效请勾选强制生效，或填 0 明确停用`);
+  }
+  if (input.perHour > 0 && input.perHour <= usage.usedHour) {
+    throw badRequest(`新小时上限（${input.perHour}）不高于过去 1 小时已用量（${usage.usedHour}），保存后会立即触发熔断；如确认立即生效请勾选强制生效，或填 0 明确停用`);
+  }
+}
+
+export async function updateBudget(service: string, input: { perMinute: number; perHour: number; perDay: number; reason: string; force?: boolean }, actor: string) {
+  if (!input.reason?.trim()) throw badRequest("reason is required");
+  for (const v of [input.perMinute, input.perHour, input.perDay]) if (!Number.isInteger(v) || v < 0) throw badRequest("budgets are non-negative integers (0 stops the service)");
+  const [usage] = await sql<{ used_hour: number; used_day: number }[]>`
+    SELECT count(*) FILTER (WHERE started_at > now() - interval '1 hour')::int AS used_hour,
+           count(*)::int AS used_day
+    FROM receipt_attempts
+    WHERE service = ${service} AND origin = 'live' AND started_at > now() - interval '1 day'`;
+  validateBudgetFloor(input, { usedHour: usage?.used_hour ?? 0, usedDay: usage?.used_day ?? 0 });
   const [before] = await sql`SELECT per_minute, per_hour, per_day FROM budgets WHERE service = ${service}`;
   const [after] = await sql`
     INSERT INTO budgets (service, per_minute, per_hour, per_day, note) VALUES (${service}, ${input.perMinute}, ${input.perHour}, ${input.perDay}, ${input.reason})

@@ -19,27 +19,43 @@ def parse_args():
                     help="生成带返回条的站点模式")
     return ap.parse_args()
 
-ARGS = parse_args()
-BASE = os.path.dirname(os.path.abspath(__file__))
-FOR_SITE = ARGS.site
-data = json.load(open(ARGS.data, encoding="utf-8"))
-data_js = json.dumps(data, ensure_ascii=False)
+def serialize_inline_json(obj):
+    """Serialize JSON safely for embedding inside an inline <script> tag."""
+    return (
+        json.dumps(obj, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
-# 官方 Save the Children logo（从 savethechildren.net 获取，base64 内联，离线可用）
-_logo_path = os.path.join(BASE, "logo_stc.svg")
-if os.path.exists(_logo_path):
-    _logo_b64 = base64.b64encode(open(_logo_path, "rb").read()).decode("ascii")
-    LOGO = '<img class="logo" src="data:image/svg+xml;base64,%s" alt="Save the Children">' % _logo_b64
-else:
-    LOGO = '<span class="logo" style="width:120px;height:38px;background:rgba(255,255,255,.25);border-radius:6px;display:inline-block"></span>'
 
-# 返回条的 href 不写死部署前缀：页面可能挂在 /、/yihot/ 或别的路径下，
-# 由 location.pathname 去掉末尾的 about/dashboard 再拼 /about，三种情况都对。
-# （file:// 打开时这一条是 hidden 的，也用不上。）
-BACKBAR = ('<a class="back" id="back-to-about" href="/about">← 回到关于</a>'
-           '<script>document.getElementById("back-to-about").href='
-           'location.pathname.replace(/\\/?about\\/dashboard\\/?$/,"")+"/about";</script>'
-           if FOR_SITE else '<a class="back" href="/about" hidden>← 回到关于</a>')
+def main():
+    args = parse_args()
+    base = os.path.dirname(os.path.abspath(__file__))
+    for_site = args.site
+    with open(args.data, encoding="utf-8") as f:
+        data = json.load(f)
+    data_js = serialize_inline_json(data)
+
+    # 官方 Save the Children logo（从 savethechildren.net 获取，base64 内联，离线可用）
+    logo_path = os.path.join(base, "logo_stc.svg")
+    if os.path.exists(logo_path):
+        with open(logo_path, "rb") as lf:
+            logo_b64 = base64.b64encode(lf.read()).decode("ascii")
+        logo = '<img class="logo" src="data:image/svg+xml;base64,%s" alt="Save the Children">' % logo_b64
+    else:
+        logo = '<span class="logo" style="width:120px;height:38px;background:rgba(255,255,255,.25);border-radius:6px;display:inline-block"></span>'
+
+    # 返回条的 href 不写死部署前缀：页面可能挂在 /、/yihot/ 或别的路径下，
+    # 由 location.pathname 去掉末尾的 about/dashboard 再拼 /about，三种情况都对。
+    # （file:// 打开时这一条是 hidden 的，也用不上。）
+    backbar = (
+        '<a class="back" id="back-to-about" href="/about">← 回到关于</a>'
+        '<script>document.getElementById("back-to-about").href='
+        'location.pathname.replace(/\\/?about\\/dashboard\\/?$/,"")+"/about";</script>'
+        if for_site else '<a class="back" href="/about" hidden>← 回到关于</a>'
+    )
+    return args, data_js, logo, backbar
 
 HTML = r"""<!doctype html>
 <html lang="zh-CN">
@@ -618,8 +634,10 @@ function buildStatic(){
 </html>
 """
 
-html = HTML.replace("__DATA__", data_js).replace("__LOGO__", LOGO).replace("__BACKBAR__", BACKBAR)
-out = ARGS.out
-with open(out, "w", encoding="utf-8") as f:
-    f.write(html)
-print("index.html 写出:", out, round(os.path.getsize(out)/1024,1), "KB", "(site mode)" if FOR_SITE else "")
+if __name__ == "__main__":
+    args, data_js, logo, backbar = main()
+    html = HTML.replace("__DATA__", data_js).replace("__LOGO__", logo).replace("__BACKBAR__", backbar)
+    out = args.out
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(html)
+    print("index.html 写出:", out, round(os.path.getsize(out)/1024,1), "KB", "(site mode)" if args.site else "")

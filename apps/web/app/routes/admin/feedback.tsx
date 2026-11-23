@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Form, useSearchParams } from "react-router";
 import type { Route } from "./+types/feedback";
 import { adminGet } from "../../lib/admin.server";
-import { useAdminAction } from "../../features/admin/action";
+import { adminApiUrl, useAdminAction } from "../../features/admin/action";
 import { bj } from "../../features/admin/format";
 import { FEEDBACK_STATUS } from "../../features/admin/labels";
 import { AdminPage, Badge, Button, Card, Empty, FilterChips, Input, Pager, ReasonDialog, Select, Textarea, Time } from "../../features/admin/ui";
@@ -63,8 +63,8 @@ function FeedbackCard({ f }: { f: Feedback }) {
       </div>
       <p className="mt-2.5 whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{f.content}</p>
       {f.screenshot === "local" && (
-        <a href={`${base}/screenshot`} target="_blank" rel="noreferrer" className="mt-2 inline-block">
-          <img src={`${base}/screenshot`} alt="反馈截图" loading="lazy" className="max-h-48 rounded-control ring-1 ring-line" />
+        <a href={adminApiUrl(`${base}/screenshot`)} target="_blank" rel="noreferrer" className="mt-2 inline-block">
+          <img src={adminApiUrl(`${base}/screenshot`)} alt="反馈截图" loading="lazy" className="max-h-48 rounded-control ring-1 ring-line" />
         </a>
       )}
       {f.screenshot === "feishu" && <p className="mt-2 text-[12.5px] text-ink-4">截图已随反馈转到内部飞书群。</p>}

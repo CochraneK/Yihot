@@ -49,13 +49,23 @@ export function parseCookies(header: string | undefined): Record<string, string>
   const out: Record<string, string> = {};
   for (const part of (header ?? "").split(";")) {
     const i = part.indexOf("=");
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    const key = part.slice(0, i).trim();
+    // Per RFC 6265, browsers send more-specific paths (e.g. /yihot) before root (/); keep the first occurrence.
+    if (!key || key in out) continue;
+    const raw = part.slice(i + 1).trim();
+    try {
+      out[key] = decodeURIComponent(raw);
+    } catch {
+      // A malformed percent-sequence in an unrelated same-origin cookie must not lock out /api/admin.
+      out[key] = raw;
+    }
   }
   return out;
 }
 
-export function cookie(name: string, value: string, maxAgeSeconds: number, secure: boolean): string {
-  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
+export function cookie(name: string, value: string, maxAgeSeconds: number, secure: boolean, path = "/"): string {
+  return `${name}=${encodeURIComponent(value)}; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
 }
 
 /** Where to send the browser to sign in; the signed state also carries where to return. */

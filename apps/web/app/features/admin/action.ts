@@ -26,6 +26,9 @@ function newKey() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const BASE_PREFIX = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+export const adminApiUrl = (path: string) => (BASE_PREFIX && path.startsWith("/api/") ? `${BASE_PREFIX}${path}` : path);
+
 export function useAdminAction() {
   const me = useAdminMe();
   const revalidator = useRevalidator();
@@ -45,14 +48,14 @@ export function useAdminAction() {
       keys.current.set(label, key);
       setPending(label);
       try {
-        const res = await fetch(path, {
+        const res = await fetch(adminApiUrl(path), {
           method,
           credentials: "same-origin",
           headers: { "content-type": "application/json", "x-csrf-token": me.csrf, "idempotency-key": key },
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         if (res.status === 401) {
-          window.location.href = `/api/auth/login?return=${encodeURIComponent(window.location.pathname)}`;
+          window.location.href = `${BASE_PREFIX}/api/auth/login?return=${encodeURIComponent(window.location.pathname)}`;
           return null;
         }
         const text = await res.text();

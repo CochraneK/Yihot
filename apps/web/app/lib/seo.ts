@@ -5,10 +5,13 @@ import { SITE } from "@aihot/industry/site";
 
 /**
  * The site's address: SITE_URL while rendering on the server (what crawlers and share previews read),
- * the page's own origin in the browser.
+ * the page's own origin plus the deployed base path (e.g. /yihot) in the browser.
  */
 export function siteUrl(): string {
-  if (typeof window !== "undefined") return window.location.origin;
+  if (typeof window !== "undefined") {
+    const base = (import.meta.env?.BASE_URL ?? "/").replace(/\/+$/, "");
+    return `${window.location.origin}${base}`;
+  }
   return (process.env.SITE_URL || SITE.defaultUrl).replace(/\/+$/, "");
 }
 

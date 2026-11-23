@@ -6,8 +6,11 @@ import { FEATURES } from "@aihot/industry/features";
 //   digest — follow-ups without reader impact: one 09:00 message a day, meant to be handed to the AI.
 // Delivery goes through sendAlert (ops chat, internal-chat fallback; off unless FEISHU_INTERNAL_ENABLED).
 import { beijingDate, beijingTime } from "@aihot/contracts/time";
+import { isProduction } from "../config.ts";
 import { sql } from "../db.ts";
+import { modelSources } from "../editorial/models.ts";
 import { beijingDay, beijingStamp, duration, formatAlert, formatRecovery, sendAlert, type Finding, type Level } from "../notify/feishu.ts";
+import { isModelConfigured, missingModelConfig, MODELS } from "../providers/llm.ts";
 import { backupConfigured } from "./backup.ts";
 
 const REPEAT_MS: Record<Exclude<Level, "digest">, number> = { now: 3600_000, today: 24 * 3600_000 };
@@ -107,6 +110,51 @@ export async function collectFindings(now = Date.now()): Promise<Finding[]> {
         });
       }
     }
+    // 活跃热点超过 2 小时仍缺事件综述（曾因 story.digest 切到未配置模型导致 534 条热点失语 3 天无告警）。
+    const [missingDigests] = await sql<{ n: number; oldest: Date | null }[]>`
+      SELECT count(*)::int AS n, min(s.created_at) AS oldest
+      FROM stories s
+      WHERE s.status = 'active' AND s.merged_into IS NULL
+        AND (s.digest IS NULL OR s.digest = '')
+        AND s.created_at < now() - interval '2 hours'
+        AND s.latest_at > now() - interval '24 hours'
+        AND EXISTS (
+          SELECT 1 FROM facts f
+          JOIN fact_articles fa ON fa.fact_id = f.id
+          JOIN publications p ON p.article_id = fa.article_id
+          WHERE f.story_id = s.id AND p.visibility = 'public' AND p.eligible AND NOT p.backfill
+        )`;
+    if (missingDigests && missingDigests.n >= 5) {
+      out.push({
+        key: "stories.digest_missing",
+        level: "now",
+        title: "热点事件缺少综述",
+        impact: `最近 24 小时有 ${missingDigests.n} 个活跃热点超过 2 小时仍无综述，热点页和事件页会缺概要`,
+        heals: "不会，需要检查 story.digest 失败原因并补跑",
+        action: "转给 AI 处理，检查模型配置与 story.digest 队列",
+        detail: `active stories without digest = ${missingDigests.n}${missingDigests.oldest ? `，最早创建于 ${beijingStamp(missingDigests.oldest)}` : ""}`,
+        since: missingDigests.oldest ?? undefined,
+      });
+    }
+  }
+
+  // 能力指向未配置凭据的模型：只在实际启用了模型（或生产环境）时检查，避免无密钥的离线测试误报。
+  if (modelsOn() && (isProduction || Object.values(MODELS).some((m) => isModelConfigured(m.key)))) {
+    const sources = await modelSources();
+    const broken = Object.entries(sources)
+      .filter(([, s]) => !isModelConfigured(s.model))
+      .map(([cap, s]) => `${cap}→${s.model}（缺 ${missingModelConfig(s.model).join("/")}）`);
+    if (broken.length > 0) {
+      out.push({
+        key: "models.unconfigured",
+        level: "now",
+        title: "有模型能力指向了未配置凭据的模型",
+        impact: "对应步骤会持续失败，热点综述、摘要或精选可能静默中断",
+        heals: "不会",
+        action: "去后台“模型与评测”切回已配置模型，或补齐环境变量凭据",
+        detail: broken.join("；"),
+      });
+    }
   }
 
   // ---- Money, and things only the owner can do --------------------------------------------------
@@ -198,6 +246,27 @@ export async function collectFindings(now = Date.now()): Promise<Finding[]> {
     if (now - q.oldest.getTime() > 2 * 3600_000) {
       out.push({ key: `queue.${q.name}`, level: "digest", title: `后台任务排队超过 2 小时：${q.name}`, detail: `${q.n} 个等待，最早的等了 ${duration(now - q.oldest.getTime())}` });
     }
+  }
+
+  // Non-cron background jobs repeatedly entering `failed` state (e.g. story.digest failing silently).
+  const failedJobs = await sql<{ name: string; n: number; oldest: Date; sample: string | null }[]>`
+    SELECT name, count(*)::int AS n, min(coalesce(completed_on, created_on)) AS oldest,
+           (array_agg(left(coalesce(output::text, ''), 180) ORDER BY coalesce(completed_on, created_on) DESC))[1] AS sample
+    FROM pgboss.job
+    WHERE state = 'failed' AND name NOT LIKE 'cron.%'
+      AND coalesce(completed_on, created_on) > now() - interval '3 hours'
+    GROUP BY 1 HAVING count(*) >= 5`;
+  for (const j of failedJobs) {
+    out.push({
+      key: `jobs.failed.${j.name}`,
+      level: j.n >= 20 ? "now" : "today",
+      title: `后台任务持续失败：${j.name}`,
+      impact: `最近 3 小时内有 ${j.n} 个 ${j.name} 任务进入失败状态，对应内容可能缺更新`,
+      heals: "不会，已失败任务不会自动重跑",
+      action: "转给 AI 查明失败原因并修复后补跑",
+      detail: `最近 3 小时失败 ${j.n} 次${j.sample ? `；最近错误：${j.sample}` : ""}`,
+      since: j.oldest,
+    });
   }
 
   // A leaderboard source keeps its last snapshot while failing.
