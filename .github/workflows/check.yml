@@ -84,7 +84,8 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p test_charity_db_preview.py -v
           python3 -m unittest discover -s tests -p test_wechat_analysis_migration.py -v
-          python3 -m py_compile scripts/charity_db_preview.py tools/wechat-analysis/prepare_jsonl.py tools/wechat-analysis/text_mining.py
+          python3 -m unittest discover -s tests -p test_stc_dashboard_build.py -v
+          python3 -m py_compile scripts/charity_db_preview.py tools/wechat-analysis/prepare_jsonl.py tools/wechat-analysis/text_mining.py tools/stc-wechat-dashboard/build_dashboard.py
       - name: Install
         run: npm ci --no-audit --no-fund
       - name: Production dependency audit (reports existing advisories, does not change lock)

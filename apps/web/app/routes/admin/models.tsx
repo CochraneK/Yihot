@@ -27,7 +27,7 @@ interface Usage {
 interface Models {
   days: number;
   capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default"; invalid?: string }; usage: Usage[] }>;
-  choices: Array<{ key: string; service: string; vision: boolean }>;
+  choices: Array<{ key: string; service: string; vision: boolean; configured?: boolean }>;
   history: Array<{ at: string; actor: string; subject: string; reason: string | null; before: { model: string; source: string } | null; after: { model: string; source: string } | null }>;
   benches: Array<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; created_at: string }>;
 }
@@ -57,6 +57,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
       <div className="grid gap-5">
         {m.capabilities.map((c) => {
           const total = c.usage.reduce((a, u) => a + u.calls, 0);
+          const currentChoice = m.choices.find((x) => x.key === c.current.model);
           return (
             <Card
               key={c.key}
@@ -66,6 +67,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
                   <span className="font-mono text-[12px] font-normal text-ink-3">{c.current.model}</span>
                   <Badge tone={c.current.source === "admin" ? "accent" : "muted"}>{SOURCE_LABEL[c.current.source]}</Badge>
                   {c.current.invalid && <Badge tone="bad">配置的 {c.current.invalid} 不存在，未生效</Badge>}
+                  {currentChoice?.configured === false && <Badge tone="bad">凭据未配置，调用会失败</Badge>}
                 </span>
               }
               right={
@@ -179,8 +181,8 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
             {m.choices
               .filter((x) => x.vision === !!target?.vision)
               .map((x) => (
-                <option key={x.key} value={x.key}>
-                  {x.key}（{x.service}）
+                <option key={x.key} value={x.key} disabled={x.configured === false && x.key !== target?.current.model}>
+                  {x.key}（{x.service}{x.configured === false ? " · 未配置凭据" : ""}）
                 </option>
               ))}
             <option value="__default">恢复默认（{target?.env} 或 {target?.defaultModel}）</option>

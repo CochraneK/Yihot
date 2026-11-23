@@ -94,7 +94,7 @@ export default function AdminLayout({ loaderData }: Route.ComponentProps) {
             <span className="truncate">{me.name}</span>
             {me.dev && <span className="rounded bg-amber/15 px-1.5 text-[11px] font-medium text-amber">开发</span>}
           </div>
-          <form method="post" action="/api/auth/logout" className="mt-1.5">
+          <form method="post" action={`${(import.meta.env.BASE_URL || "/").replace(/\/+$/, "")}/api/auth/logout`} className="mt-1.5">
             <button type="submit" className="text-ink-4 hover:text-ink-2">退出登录</button>
           </form>
         </div>

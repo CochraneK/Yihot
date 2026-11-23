@@ -25,6 +25,8 @@ export const meta: Route.MetaFunction = () => [{ title: `登录 · ${SITE.name} 
 
 export const headers: Route.HeadersFunction = () => ({ "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" });
 
+const BASE_PREFIX = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+
 export default function AdminLogin() {
   const { returnTo, error, password, feishu } = useLoaderData<typeof loader>();
   const message = error ? (ERRORS[error] ?? ERRORS.wrong) : !password ? ERRORS.unset : null;
@@ -35,7 +37,7 @@ export default function AdminLogin() {
           <Wordmark size={26} className="text-ink" />
           <span className="text-[15px] font-semibold text-ink-3">后台</span>
         </div>
-        <form method="post" action="/api/auth/password" className="card mt-8 p-6">
+        <form method="post" action={`${BASE_PREFIX}/api/auth/password`} className="card mt-8 p-6">
           <input type="hidden" name="return" value={returnTo} />
           <label htmlFor="password" className="block text-[13px] font-medium text-ink-2">
             管理员密码
@@ -58,7 +60,7 @@ export default function AdminLogin() {
             登录
           </button>
           {feishu && (
-            <a href={`/api/auth/feishu?${new URLSearchParams({ return: returnTo })}`} className={`${buttonClass("secondary", "lg")} mt-3 w-full`}>
+            <a href={`${BASE_PREFIX}/api/auth/feishu?${new URLSearchParams({ return: returnTo })}`} className={`${buttonClass("secondary", "lg")} mt-3 w-full`}>
               用飞书登录
             </a>
           )}

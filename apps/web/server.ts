@@ -7,6 +7,7 @@ import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequestListener } from "@react-router/node";
+import { scopeAdminSetCookies, stripNamedCookies } from "@aihot/contracts/admin-paths";
 import { isApiOwned, resolveRedirect } from "@aihot/contracts/http-policy";
 import { botBlocked } from "@aihot/contracts/bot-policy";
 import { isPrivateAddress, lastForwardedAddress } from "@aihot/contracts/net";
@@ -292,8 +293,12 @@ async function handle(req: import("node:http").IncomingMessage, res: import("nod
     }
     const clientIp = req.socket.remoteAddress ?? "unknown";
     const proxyPath = pathname.slice("/futureme".length) + search;
-    // The visitor cannot override the upstream Host or trusted client address.
+    // The visitor cannot override the upstream Host or trusted client address,
+    // and sibling apps must never receive YiHot's admin session cookies.
     const { host: _host, connection: _connection, ...headers } = req.headers;
+    const filteredCookie = stripNamedCookies(req.headers.cookie);
+    if (filteredCookie) headers["cookie"] = filteredCookie;
+    else delete headers["cookie"];
     headers["host"] = FUTUREME_UPSTREAM.host;
     headers["x-real-ip"] = clientIp;
     headers["x-forwarded-for"] = clientIp;
@@ -347,12 +352,18 @@ async function handle(req: import("node:http").IncomingMessage, res: import("nod
     const forwarded = lastForwardedAddress(req.headers["x-forwarded-for"]);
     const client = TRUST_PROXY && isPrivateAddress(peer) && forwarded ? forwarded : peer;
     const headers = { ...req.headers, "x-forwarded-for": client, "x-real-ip": client };
-    const upstream = httpRequest({ hostname: API.hostname, port: API.port, path: internal + search, method: req.method, headers }, (up) => {
-      res.writeHead(up.statusCode ?? 502, up.headers);
+    const upstream = httpRequest({ hostname: API.hostname, port: API.port, path: internal + search, method: req.method, headers, timeout: 120_000 }, (up) => {
+      const responseHeaders = { ...up.headers };
+      if (prefixed && responseHeaders["set-cookie"]) {
+        responseHeaders["set-cookie"] = scopeAdminSetCookies(responseHeaders["set-cookie"], PREFIX) as string[];
+      }
+      res.writeHead(up.statusCode ?? 502, responseHeaders);
       up.pipe(res);
     });
+    upstream.on("timeout", () => upstream.destroy(new Error("API upstream timed out")));
     upstream.on("error", () => {
-      res.statusCode = 502;
+      if (res.headersSent) return res.destroy();
+      res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       res.end("api unavailable");
     });
     return req.pipe(upstream);

@@ -13,6 +13,7 @@ import { promptText, promptVersion } from "../editorial/prompts.ts";
 import { modelFor } from "../editorial/models.ts";
 import { addDays, beijingDate, beijingMidnight, isoWeekLabel, isoWeekRange } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
+import { isNonCopy } from "../lib/text.ts";
 import { chatJson } from "../providers/llm.ts";
 import { completeReceipt } from "../providers/receipts.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
@@ -125,9 +126,11 @@ async function recentlyCovered(kind: "daily", before: string, days = 7): Promise
   return out;
 }
 
-const LeadSchema = z.object({
-  title: z.string().max(120),
-  leadParagraph: z.string().max(600),
+const noLeak = (v: string) => !v || !isNonCopy(v);
+
+export const LeadSchema = z.object({
+  title: z.string().max(120).refine(noLeak, "title contains non-copy reasoning"),
+  leadParagraph: z.string().max(600).refine(noLeak, "leadParagraph contains non-copy reasoning"),
   highlights: z.array(z.union([z.number(), z.string()])).max(6).catch([]),
 });
 
@@ -223,10 +226,14 @@ export async function composeDaily(date: string, reason = "scheduled", opts: { a
 
 export const PeriodSchema = z.object({
   // A headline is asked for, but a missing or unusable one leaves the issue on its generic name.
-  headline: z.string().max(60).catch(""),
-  overview: z.string().max(1500),
+  headline: z.string().max(60).catch("").refine(noLeak, "headline contains non-copy reasoning"),
+  overview: z.string().max(1500).refine(noLeak, "overview contains non-copy reasoning"),
   themes: z
-    .array(z.object({ heading: z.string().max(60), summary: z.string().max(800), refs: z.array(z.union([z.number(), z.string()])).transform((refs) => refs.slice(0, 20)) }))
+    .array(z.object({
+      heading: z.string().max(60).refine(noLeak, "heading contains non-copy reasoning"),
+      summary: z.string().max(800).refine(noLeak, "summary contains non-copy reasoning"),
+      refs: z.array(z.union([z.number(), z.string()])).transform((refs) => refs.slice(0, 20)),
+    }))
     .min(1)
     // Not a design target: themes now follow from "every entry cited", so this only stops a runaway
     // answer. Anything sliced away here lands in the leftover block, so the ceiling sits well above

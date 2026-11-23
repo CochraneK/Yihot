@@ -4,7 +4,7 @@
 // new work only.
 import { sql } from "../db.ts";
 import { CAPABILITIES, invalidateModelCache, modelSources, type Capability, type CapabilityKey } from "../editorial/models.ts";
-import { MODELS } from "../providers/llm.ts";
+import { isModelConfigured, missingModelConfig, MODELS } from "../providers/llm.ts";
 import { audit } from "./auth.ts";
 
 interface UsageRow {
@@ -84,7 +84,12 @@ export async function modelsOverview(days = 7) {
         estimate: priced(u),
       })),
   }));
-  const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));
+  const choices = Object.values(MODELS).map((m) => ({
+    key: m.key,
+    service: m.service,
+    vision: !!m.vision,
+    configured: isModelConfigured(m.key),
+  }));
   return { days, capabilities, choices, history, benches };
 }
 
@@ -97,6 +102,13 @@ export async function switchModel(capability: string, model: string | null, reas
     const spec = MODELS[model];
     if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
     if (!!c.vision !== !!spec.vision) throw Object.assign(new Error(c.vision ? "this capability needs a vision model" : "a vision-only model cannot do this"), { statusCode: 400 });
+    const missing = missingModelConfig(model);
+    if (missing.length > 0) {
+      throw Object.assign(
+        new Error(`模型 ${model} 未配置凭据，禁止切换（缺少：${missing.join("、")}）`),
+        { statusCode: 400 },
+      );
+    }
   }
   const before = (await modelSources())[capability];
   if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;

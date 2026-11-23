@@ -92,6 +92,22 @@ export const MODELS: Record<string, ModelSpec> = {
 
 };
 
+/** Environment / credential keys still missing before this registered model can be called. */
+export function missingModelConfig(key: string): string[] {
+  const spec = MODELS[key];
+  if (!spec) return ["model"];
+  const missing: string[] = [];
+  if (!credential("models", spec.baseUrlEnv)) missing.push(spec.baseUrlEnv);
+  if (!credential("models", spec.apiKeyEnv)) missing.push(spec.apiKeyEnv);
+  if (!spec.model) missing.push(spec.key === "default" ? "LLM_MODEL" : "model");
+  return missing;
+}
+
+/** True when a registered model has endpoint, API key and model id configured in runtime credentials. */
+export function isModelConfigured(key: string): boolean {
+  return Boolean(MODELS[key]) && missingModelConfig(key).length === 0;
+}
+
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
 export interface ChatJsonOptions<S extends z.ZodType> {
