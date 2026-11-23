@@ -57,7 +57,11 @@ function BudgetRow({ b }: { b: Settings["budgets"][number] }) {
   const { run, pending } = useAdminAction();
   const [v, setV] = useState({ perMinute: b.per_minute, perHour: b.per_hour, perDay: b.per_day });
   const [open, setOpen] = useState(false);
+  const [force, setForce] = useState(false);
   const changed = v.perMinute !== b.per_minute || v.perHour !== b.per_hour || v.perDay !== b.per_day;
+  const tripsDay = v.perDay > 0 && v.perDay <= b.used_day;
+  const tripsHour = v.perHour > 0 && v.perHour <= b.used_hour;
+  const tripsNow = tripsDay || tripsHour;
   return (
     <tr className="border-b border-line/70 last:border-0">
       <td className="px-3 py-2 font-mono text-[12.5px]">{b.service}</td>
@@ -68,16 +72,26 @@ function BudgetRow({ b }: { b: Settings["budgets"][number] }) {
       ))}
       <td className="num px-3 py-2 text-right text-ink-3">{num(b.used_hour)} / {num(b.used_day)}</td>
       <td className="px-3 py-2 text-right">
-        <Button size="sm" tone="primary" disabled={!changed} onClick={() => setOpen(true)}>保存</Button>
+        <Button size="sm" tone="primary" disabled={!changed} onClick={() => { setForce(false); setOpen(true); }}>保存</Button>
         <ReasonDialog
           open={open}
           title={`调整 ${b.service} 的请求上限`}
           description="上限是付费请求的熔断：超过后请求暂停并按窗口重试。填 0 表示立即停用这个服务。"
+          danger={tripsNow}
           confirmLabel="保存"
           busy={pending === "budget"}
-          onClose={() => setOpen(false)}
-          onSubmit={async (reason) => (await run("PUT", `/api/admin/budgets/${encodeURIComponent(b.service)}`, { ...v, reason }, { label: "budget", success: "上限已更新" })) !== null}
-        />
+          onClose={() => { setOpen(false); setForce(false); }}
+          onSubmit={async (reason) => (await run("PUT", `/api/admin/budgets/${encodeURIComponent(b.service)}`, { ...v, reason, ...(force ? { force: true } : {}) }, { label: "budget", success: "上限已更新" })) !== null}
+        >
+          {tripsNow && (
+            <label className="flex items-start gap-2 rounded-control bg-hot/10 p-3 text-[12.5px] leading-relaxed text-hot">
+              <input type="checkbox" className="mt-0.5" checked={force} onChange={(e) => setForce(e.target.checked)} />
+              <span>
+                新上限不高于当前滚动已用量（近 1h {num(b.used_hour)} / 近 24h {num(b.used_day)}），保存后会<strong>立即触发熔断</strong>直至滚动窗口腾出额度。勾选此项确认强制生效。
+              </span>
+            </label>
+          )}
+        </ReasonDialog>
       </td>
     </tr>
   );

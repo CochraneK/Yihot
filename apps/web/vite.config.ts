@@ -17,22 +17,26 @@ function devEdge(): Plugin {
         const pathname = qi >= 0 ? raw.slice(0, qi) : raw;
         const search = qi >= 0 ? raw.slice(qi) : "";
         if (pathname.startsWith("/@") || pathname.startsWith("/node_modules/") || pathname.startsWith("/app/") || pathname.startsWith("/__")) return next();
-        const decision = resolveRedirect(pathname, search);
+        const prefixed = pathname === "/yihot" || pathname.startsWith("/yihot/");
+        const internal = prefixed ? (pathname.slice("/yihot".length) || "/") : pathname;
+        const decision = resolveRedirect(internal, search);
         if (decision) {
           for (const [k, v] of Object.entries(decision.headers)) res.setHeader(k, v);
           if (decision.location) res.setHeader("Location", decision.location);
           res.statusCode = decision.status;
           return res.end();
         }
-        if (!isApiOwned(pathname)) return next();
+        if (!isApiOwned(internal)) return next();
         const upstream = httpRequest(
-          { hostname: API.hostname, port: API.port, path: raw, method: req.method, headers: req.headers },
+          { hostname: API.hostname, port: API.port, path: internal + search, method: req.method, headers: req.headers, timeout: 120_000 },
           (up) => {
             res.writeHead(up.statusCode ?? 502, up.headers);
             up.pipe(res);
           },
         );
+        upstream.on("timeout", () => upstream.destroy(new Error("API upstream timed out")));
         upstream.on("error", () => {
+          if (res.headersSent) return res.destroy();
           res.statusCode = 502;
           res.end("api unavailable");
         });
