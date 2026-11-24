@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { cookie, parseCookies } from "../packages/backend/src/admin/auth.ts";
 import { switchModel } from "../packages/backend/src/admin/models.ts";
+import { toArchiveEntry } from "../packages/backend/src/events/hot-read.ts";
 import { validateBudgetFloor } from "../packages/backend/src/admin/settings.ts";
 import { DigestSchema } from "../packages/backend/src/events/digest.ts";
 import { finalContent, freePoolRetryTokens, isModelConfigured, missingModelConfig, ModelOutputError } from "../packages/backend/src/providers/llm.ts";
@@ -109,4 +110,20 @@ test("免费池 length 截断标记正确，且只在 anydoor + 可增额时触�
   assert.equal(freePoolRetryTokens("default", "llm", truncated, 2048), null, "付费模型不触发");
   assert.equal(freePoolRetryTokens("glm-5.3-flash", "zhipu", truncated, 2048), null, "其他免费/付费服务不触发");
   assert.equal(freePoolRetryTokens("anydoor-auto", "anydoor", truncated, 8192), null, "已达上限不再增额");
+});
+
+test("热榜归档映射：保留展示与跳转字段、过滤非法徽章与缺字段记录", () => {
+  const mapped = toArchiveEntry({
+    rank: 1, title: "四部门印发实施方案", storyPublicId: "abc", heat: 190.6,
+    badges: ["surge", "bogus", "new"], participantCount: 34, sourceCount: 9,
+    participants: new Array(40).fill({ name: "x" }), // 归档不携带庞大的参与者数组
+  });
+  assert.deepEqual(mapped, {
+    rank: 1, title: "四部门印发实施方案", storyPublicId: "abc", heat: 190.6,
+    badges: ["surge", "new"], participantCount: 34, sourceCount: 9,
+  });
+  assert.equal(toArchiveEntry({ rank: 2, title: "有标题无事件号" })?.storyPublicId, null);
+  assert.equal(toArchiveEntry({ title: "缺 rank" }), null);
+  assert.equal(toArchiveEntry({ rank: 3 }), null);
+  assert.equal(toArchiveEntry(null), null);
 });

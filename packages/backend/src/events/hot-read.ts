@@ -1,5 +1,5 @@
 // Reading the latest published hot ranking. The web shows heat values; machine exits only ranks.
-import type { HotParticipant, HotStripEntry } from "@aihot/contracts/site";
+import type { HotArchiveDay, HotArchiveEntry, HotArchiveResponse, HotParticipant, HotStripEntry } from "@aihot/contracts/site";
 import { sql } from "../db.ts";
 import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 import { restrictedStoryCopy } from "../publication/story-copy.ts";
@@ -61,6 +61,40 @@ async function queryLatestHotRanking(): Promise<HotRanking | null> {
     SELECT id, computed_at, rule_version, entries, evidence FROM hot_rankings WHERE published ORDER BY computed_at DESC LIMIT 1`;
   if (!row) return null;
   return { id: row.id, computedAt: row.computed_at.toISOString(), ruleVersion: row.rule_version, entries: row.entries, coverage: row.evidence };
+}
+
+/** 把一条历史榜单记录映射成归档快照：只取展示与跳转所需字段，丢弃庞大的 participants。 */
+export function toArchiveEntry(raw: unknown): HotArchiveEntry | null {
+  const e = raw as Partial<HotEntry>;
+  if (!e || typeof e.rank !== "number" || typeof e.title !== "string") return null;
+  const badges = Array.isArray(e.badges)
+    ? e.badges.filter((b): b is HotArchiveEntry["badges"][number] => b === "surge" || b === "new" || b === "rising")
+    : [];
+  return {
+    rank: e.rank,
+    title: e.title,
+    storyPublicId: typeof e.storyPublicId === "string" ? e.storyPublicId : null,
+    heat: typeof e.heat === "number" ? e.heat : 0,
+    badges,
+    participantCount: Number(e.participantCount) || 0,
+    sourceCount: Number(e.sourceCount) || 0,
+  };
+}
+
+/**
+ * 全部历史热榜归档，按日期倒序。直接从 hot_daily 读当天最终榜单快照，
+ * 纯 JSONB 读取，不跑任何模型、不查二次增强，成本低到可忽略。
+ */
+export async function loadHotArchive(): Promise<HotArchiveResponse> {
+  const rows = await sql<{ day: Date | string; computed_at: Date; entries: unknown }[]>`
+    SELECT day, computed_at, entries FROM hot_daily ORDER BY day DESC`;
+  const days: HotArchiveDay[] = rows.map((r) => {
+    const day = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10);
+    const raw = Array.isArray(r.entries) ? r.entries : [];
+    const entries = raw.map(toArchiveEntry).filter((e): e is HotArchiveEntry => e !== null);
+    return { day, computedAt: r.computed_at.toISOString(), entries };
+  });
+  return { days };
 }
 
 // Faces and words change only with the ranking, so they are read once per ranking.
