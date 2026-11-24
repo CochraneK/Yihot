@@ -135,7 +135,14 @@ export interface ChatJsonResult<T> {
   usage: Record<string, unknown> | null;
 }
 
-export class ModelOutputError extends Error {}
+export class ModelOutputError extends Error {
+  /** 供应商因 max_tokens 截断（finish_reason=length）：加大额度重试同一模型有机会自愈。 */
+  readonly truncated: boolean;
+  constructor(message: string, truncated = false) {
+    super(message);
+    this.truncated = truncated;
+  }
+}
 
 /** 先校验响应信封，再允许 JSON 或宽松文本解析接触最终正文。 */
 export function finalContent(response: unknown): string {
@@ -144,7 +151,7 @@ export function finalContent(response: unknown): string {
   if (!choice?.message) throw new ModelOutputError("Missing assistant message");
   // 部分兼容服务不提供完成原因；明确截断、过滤或工具调用都不构成完整答案。
   if (choice.finish_reason != null && choice.finish_reason !== "stop") {
-    throw new ModelOutputError(`Incomplete assistant answer (${choice.finish_reason})`);
+    throw new ModelOutputError(`Incomplete assistant answer (${choice.finish_reason})`, choice.finish_reason === "length");
   }
   const content = choice.message.content;
   if (typeof content !== "string" || !content.trim()) throw new ModelOutputError("Missing final content");
@@ -196,15 +203,26 @@ function isConnectFailure(error: unknown): boolean {
   return ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "ECONNRESET_BEFORE_SEND", "CERT_HAS_EXPIRED"].includes(code ?? "");
 }
 
+/**
+ * 免费池截断是否值得在同模型增额重试：只对 anydoor 的 max_tokens 截断生效，且额度确实还能加大。
+ * 返回本次应使用的 max_tokens；不需要重试则返回 null。抽成纯函数便于离线测试省钱逻辑。
+ */
+export function freePoolRetryTokens(modelKey: string, service: string, error: unknown, baseMaxTokens: number): number | null {
+  if (modelKey === "default" || service !== "anydoor") return null;
+  if (!(error instanceof ModelOutputError) || !error.truncated) return null;
+  const retry = Math.min(Math.max(baseMaxTokens, 512) * 2, 8192);
+  return retry > baseMaxTokens ? retry : null;
+}
+
 export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): Promise<ChatJsonResult<z.infer<S>>> {
   const spec = MODELS[opts.model];
   if (!spec) throw new Error(`Unknown model ${opts.model}`);
   if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
 
   const temperature = opts.temperature ?? 0.2;
-  const maxTokens = Math.max(opts.maxTokens ?? 1500, 512) + (spec.key.endsWith("-think") ? 4000 : 0);
+  const baseMaxTokens = Math.max(opts.maxTokens ?? 1500, 512) + (spec.key.endsWith("-think") ? 4000 : 0);
   const userText = typeof opts.user === "string" ? opts.user : JSON.stringify(opts.user);
-  const buildBody = (s: ModelSpec): Record<string, unknown> => ({
+  const buildBody = (s: ModelSpec, maxTokens: number): Record<string, unknown> => ({
     model: s.model,
     messages: [
       // A prompt given as one user message (the title/summary prompts) has no system message.
@@ -218,11 +236,11 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
     ...(s.extra ?? {}),
   });
 
-  const callWith = async (s: ModelSpec): Promise<ChatJsonResult<z.infer<S>>> => {
+  const callWith = async (s: ModelSpec, maxTokens: number): Promise<ChatJsonResult<z.infer<S>>> => {
     const baseUrl = credential("models", s.baseUrlEnv);
     const apiKey = credential("models", s.apiKeyEnv);
     if (!baseUrl || !apiKey || !s.model) throw new Error(`Model ${s.key} is not configured (${s.baseUrlEnv}, ${s.apiKeyEnv}${s.key === "default" ? ", LLM_MODEL" : ""})`);
-    const body = buildBody(s);
+    const body = buildBody(s, maxTokens);
     const receipt = await paidRequest(
       {
         service: s.service,
@@ -279,14 +297,29 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
     } catch (error) {
       // Unusable output: record it and let a later attempt pay for a fresh answer.
       await rejectReceivedResponse(receipt.receiptId, `unusable output: ${String(error).slice(0, 500)}`);
-      throw new ModelOutputError(`Model ${s.key} returned unusable output for ${opts.subject}: ${String(error).slice(0, 300)}`);
+      const truncated = error instanceof ModelOutputError && error.truncated;
+      throw new ModelOutputError(`Model ${s.key} returned unusable output for ${opts.subject}: ${String(error).slice(0, 300)}`, truncated);
     }
     return { data: parsed, receiptId: receipt.receiptId, reused: receipt.reused, model: s.key, usage: response.usage ?? null };
   };
 
   try {
-    return await callWith(spec);
+    return await callWith(spec, baseMaxTokens);
   } catch (error) {
+    // 免费池省钱：小模型常把 token 花在思考上，输出正文时被 max_tokens 截断（finish_reason=length）。
+    // 这类"还能救"的截断先用更大额度在同一免费模型上重试一次；成功了就不必惊动付费 default，
+    // 避免同一次工作付两遍钱。只有 reasoning 复制进正文之类的不可恢复错误才直接走下面的付费兜底。
+    const retryTokens = freePoolRetryTokens(opts.model, spec.service, error, baseMaxTokens);
+    if (retryTokens !== null) {
+      console.warn(`[chatJson] ${opts.model} output length-truncated at ${baseMaxTokens} tokens; retrying the same free model with ${retryTokens}`);
+      try {
+        return await callWith(spec, retryTokens);
+      } catch (retryError) {
+        // 增额仍不可用，落到下面的付费兜底；让日志与回执保留最后一次失败的原因。
+        if (!(retryError instanceof ProviderRejectedError && !retryError.retryable) && !(retryError instanceof ModelOutputError)) throw retryError;
+        console.warn(`[chatJson] ${opts.model} retry with ${retryTokens} tokens still failed (${retryError instanceof Error ? retryError.message : String(retryError)}); falling back to default`);
+      }
+    }
     // Free-pool safety net: if a non-default model (currently AnyDoor) is auth-rejected or returns
     // unusable output, retry once on the deployment default (DeepSeek) so a dead key never stalls
     // the pipeline. Transient errors (5xx/429/connect, retryable=true) are left to the job own
@@ -298,7 +331,7 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
       const fbKey = fb && credential("models", fb.apiKeyEnv);
       if (fb && fbBase && fbKey) {
         console.warn(`[chatJson] ${opts.model} (service=${spec.service}) failed (${error instanceof Error ? error.message : String(error)}); falling back to default (${fb.key})`);
-        return await callWith(fb);
+        return await callWith(fb, baseMaxTokens);
       }
     }
     throw error;
