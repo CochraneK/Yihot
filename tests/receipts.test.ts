@@ -50,41 +50,109 @@ test("an answer already received is reused instead of bought again", async () =>
   assert.equal(second.receiptId, first.receiptId);
 });
 
-test("生产回执140569形态：截断推理被复制到正文时拒绝解析并使用已有备用模型", async () => {
-  const reasoning = 'We need to produce title_zh and summary_zh.\n\nFirst, understand the original title: "女童收到健康包".';
-  const title = "女童收到健康包";
-  const summary = "公益项目为女童提供健康用品与青春期健康知识，帮助她们了解身体变化，培养健康生活习惯。";
-  const good = `title_zh: ${title}\nsummary_zh: ${summary}`;
-  const saved = Object.fromEntries(["ANYDOOR_BASE_URL", "ANYDOOR_API_KEY", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"].map((key) => [key, process.env[key]]));
+// 免费池故障的各种信封形态，以及免费池省钱所需的环境隔离，供下面几条测试共用。
+const reasoning = 'We need to produce title_zh and summary_zh.\n\nFirst, understand the original title: "女童收到健康包".';
+const copyTitle = "女童收到健康包";
+const copySummary = "公益项目为女童提供健康用品与青春期健康知识，帮助她们了解身体变化，培养健康生活习惯。";
+const copyGood = `title_zh: ${copyTitle}\nsummary_zh: ${copySummary}`;
+const copySchema = z.object({ titleZh: z.string(), summaryZh: z.string(), bodyZh: z.string() });
+const copyEnvKeys = ["ANYDOOR_BASE_URL", "ANYDOOR_API_KEY", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"];
+const saveCopyEnv = () => Object.fromEntries(copyEnvKeys.map((key) => [key, process.env[key]]));
+const restoreCopyEnv = (saved: Record<string, string | undefined>) => {
+  for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+};
+const copyAsk = (subject: string) => chatJson({
+  model: "anydoor-auto", purpose: "summarize_article", subject, promptVersion: "copy-boundary-test", system: "", user: subject, maxTokens: 2048,
+  schema: copySchema, parse: (content) => parseTranslateOutput(content),
+});
+
+test("推理被复制/拼进正文是不可恢复故障：不重试免费池，直接回落备用模型", async () => {
+  const saved = saveCopyEnv();
   let badResponse: unknown;
   const broken = await stub(() => badResponse);
-  const backup = await stub(() => ({ choices: [{ finish_reason: "stop", message: { content: good } }], usage }));
+  const backup = await stub(() => ({ choices: [{ finish_reason: "stop", message: { content: copyGood } }], usage }));
+  Object.assign(process.env, { ANYDOOR_BASE_URL: broken.url, ANYDOOR_API_KEY: "test-key", LLM_BASE_URL: backup.url, LLM_API_KEY: "test-key", LLM_MODEL: "test-backup" });
+  try {
+    for (const [name, choice] of [
+      ["reasoning-duplicated", { finish_reason: "stop", message: { content: reasoning, reasoning_content: reasoning } }],
+      ["reasoning-prefixed", { finish_reason: "stop", message: { content: `${reasoning}\n${copyGood}`, reasoning_content: reasoning } }],
+    ] as const) {
+      badResponse = { model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", choices: [choice], usage: { completion_tokens: 2048, completion_tokens_details: { reasoning_tokens: 2048 } } };
+      const subject = `copy-boundary-${name}-${tag()}`;
+      const parsedInputs: string[] = [];
+      const result = await chatJson({ model: "anydoor-auto", purpose: "summarize_article", subject, promptVersion: "copy-boundary-test", system: "", user: subject, maxTokens: 2048,
+        schema: copySchema, parse: (content) => { parsedInputs.push(content); return parseTranslateOutput(content); } });
+      assert.equal(result.model, "default");
+      assert.deepEqual(result.data, { titleZh: copyTitle, summaryZh: copySummary, bodyZh: "" });
+      assert.deepEqual(parsedInputs, [copyGood], "错误信封不能进入宽松首行解析");
+    }
+    assert.equal(broken.hits(), 2, "不可恢复故障不浪费免费池额度重试");
+    assert.equal(backup.hits(), 2, "每次故障只使用现有的一次备用调用");
+  } finally {
+    restoreCopyEnv(saved);
+    await broken.close();
+    await backup.close();
+  }
+});
+
+test("省钱：max_tokens 截断先在免费池同模型增额重试，成功后不惊动付费模型", async () => {
+  const saved = saveCopyEnv();
+  const sentMaxTokens: number[] = [];
+  // 第 1 次命中返回 length 截断，第 2 次返回完整正文；两次都来自同一个免费 stub。
+  const freepool = await stub((hit, req) => {
+    sentMaxTokens.push(JSON.parse(req.body).max_tokens);
+    if (hit === 1) return { choices: [{ finish_reason: "length", message: { content: reasoning, reasoning_content: reasoning } }], usage: { completion_tokens: 2048, completion_tokens_details: { reasoning_tokens: 2048 } } };
+    return { choices: [{ finish_reason: "stop", message: { content: copyGood } }], usage };
+  });
+  const backup = await stub(() => ({ choices: [{ finish_reason: "stop", message: { content: copyGood } }], usage }));
+  Object.assign(process.env, { ANYDOOR_BASE_URL: freepool.url, ANYDOOR_API_KEY: "test-key", LLM_BASE_URL: backup.url, LLM_API_KEY: "test-key", LLM_MODEL: "test-backup" });
+  try {
+    const subject = `freepool-retry-ok-${tag()}`;
+    const result = await copyAsk(subject);
+    assert.equal(result.model, "anydoor-auto", "增额重试成功应留在免费池，不回落付费");
+    assert.deepEqual(result.data, { titleZh: copyTitle, summaryZh: copySummary, bodyZh: "" });
+    assert.deepEqual(sentMaxTokens, [2048, 4096], "第二次请求以翻倍额度发出");
+    assert.equal(backup.hits(), 0, "成功自愈时不应调用付费模型");
+    const rows = await sql<{ service: string; status: string }[]>`SELECT service, status FROM receipts WHERE subject = ${subject} ORDER BY id`;
+    assert.deepEqual(rows.map((r) => [r.service, r.status]), [["anydoor", "failed"], ["anydoor", "received"]]);
+  } finally {
+    restoreCopyEnv(saved);
+    await freepool.close();
+    await backup.close();
+  }
+});
+
+test("免费池截断增额后仍不可用，才回落付费模型（保留止血兜底）", async () => {
+  const saved = saveCopyEnv();
+  const sentMaxTokens: number[] = [];
+  let badResponse: unknown;
+  const broken = await stub((_hit, req) => {
+    sentMaxTokens.push(JSON.parse(req.body).max_tokens);
+    return badResponse;
+  });
+  const backup = await stub(() => ({ choices: [{ finish_reason: "stop", message: { content: copyGood } }], usage }));
   Object.assign(process.env, { ANYDOOR_BASE_URL: broken.url, ANYDOOR_API_KEY: "test-key", LLM_BASE_URL: backup.url, LLM_API_KEY: "test-key", LLM_MODEL: "test-backup" });
   try {
     for (const [name, choice] of [
       ["token-exhausted", { finish_reason: "length", message: { content: reasoning, reasoning_content: reasoning } }],
-      ["reasoning-duplicated", { finish_reason: "stop", message: { content: reasoning, reasoning_content: reasoning } }],
-      ["reasoning-prefixed", { finish_reason: "stop", message: { content: `${reasoning}\n${good}`, reasoning_content: reasoning } }],
       ["valid-json-truncated", { finish_reason: "length", message: { content: '{"titleZh":"女童收到健康包","summaryZh":"健康教育"}' } }],
     ] as const) {
       badResponse = { model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", choices: [choice], usage: { completion_tokens: 2048, completion_tokens_details: { reasoning_tokens: 2048 } } };
       const subject = `copy-boundary-${name}-${tag()}`;
       const parsedInputs: string[] = [];
       const result = await chatJson({ model: "anydoor-auto", purpose: "summarize_article", subject, promptVersion: "copy-boundary-test", system: "", user: subject, maxTokens: 2048,
-        schema: z.object({ titleZh: z.string(), summaryZh: z.string(), bodyZh: z.string() }),
-        parse: (content) => { parsedInputs.push(content); return parseTranslateOutput(content); },
-      });
+        schema: copySchema, parse: (content) => { parsedInputs.push(content); return parseTranslateOutput(content); } });
       assert.equal(result.model, "default");
-      assert.deepEqual(result.data, { titleZh: title, summaryZh: summary, bodyZh: "" });
-      assert.deepEqual(parsedInputs, [good], "错误信封不能进入宽松首行解析");
+      assert.deepEqual(result.data, { titleZh: copyTitle, summaryZh: copySummary, bodyZh: "" });
+      assert.deepEqual(parsedInputs, [copyGood], "错误信封不能进入宽松首行解析");
       const rows = await sql<{ service: string; status: string; response: unknown }[]>`SELECT service, status, response FROM receipts WHERE subject = ${subject} ORDER BY id`;
-      assert.deepEqual(rows.map((r) => [r.service, r.status]), [["anydoor", "failed"], ["llm", "received"]]);
+      assert.deepEqual(rows.map((r) => [r.service, r.status]), [["anydoor", "failed"], ["anydoor", "failed"], ["llm", "received"]]);
       assert.deepEqual(rows[0]!.response, { ...(badResponse as object), _latencyMs: (rows[0]!.response as { _latencyMs: number })._latencyMs }, "保留原始故障响应供审计");
     }
-    assert.equal(broken.hits(), 4);
-    assert.equal(backup.hits(), 4, "每次故障只使用现有的一次备用调用");
+    assert.deepEqual(sentMaxTokens, [2048, 4096, 2048, 4096], "两种截断各增额重试一次");
+    assert.equal(backup.hits(), 2, "增额仍失败才使用备用调用");
   } finally {
-    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    restoreCopyEnv(saved);
     await broken.close();
     await backup.close();
   }

@@ -5,7 +5,7 @@ import { cookie, parseCookies } from "../packages/backend/src/admin/auth.ts";
 import { switchModel } from "../packages/backend/src/admin/models.ts";
 import { validateBudgetFloor } from "../packages/backend/src/admin/settings.ts";
 import { DigestSchema } from "../packages/backend/src/events/digest.ts";
-import { isModelConfigured, missingModelConfig } from "../packages/backend/src/providers/llm.ts";
+import { finalContent, freePoolRetryTokens, isModelConfigured, missingModelConfig, ModelOutputError } from "../packages/backend/src/providers/llm.ts";
 import { LeadSchema, PeriodSchema } from "../packages/backend/src/reports/compose.ts";
 
 test("parseCookies survives malformed percent-encoding and keeps first occurrence (RFC 6265 specificity)", () => {
@@ -81,4 +81,32 @@ test("DigestSchema, LeadSchema and PeriodSchema reject leaked reasoning/prompt n
     overview: "本周样本覆盖 11 月 17 日至 23 日，重点围绕信息公开与儿童服务落地展开。",
     themes: [{ heading: "儿童保护", summary: "多地社会组织联合推进儿童保护项目落地。", refs: [1] }],
   }));
+});
+
+test("免费池 length 截断标记正确，且只在 anydoor + 可增额时触发同模型重试（省钱不影响付费模型）", () => {
+  // finalContent 只把 finish_reason=length 标为 truncated；过滤/工具调用等仍不可恢复。
+  let truncatedError: ModelOutputError | null = null;
+  try {
+    finalContent({ choices: [{ finish_reason: "length", message: { content: "partial" } }] });
+  } catch (e) {
+    truncatedError = e as ModelOutputError;
+  }
+  assert.ok(truncatedError instanceof ModelOutputError);
+  assert.equal(truncatedError!.truncated, true);
+  for (const reason of ["content_filter", "tool_calls"]) {
+    assert.throws(
+      () => finalContent({ choices: [{ finish_reason: reason, message: { content: "x" } }] }),
+      (e: unknown) => (e as ModelOutputError).truncated !== true,
+    );
+  }
+
+  // 决策函数：仅 anydoor + truncated + 额度能加大时才返回增额额度。
+  const truncated = new ModelOutputError("Incomplete assistant answer (length)", true);
+  const notTruncated = new ModelOutputError("Reasoning content copied into final content", false);
+  assert.equal(freePoolRetryTokens("anydoor-auto", "anydoor", truncated, 2048), 4096);
+  assert.equal(freePoolRetryTokens("anydoor-auto", "anydoor", truncated, 512), 1024);
+  assert.equal(freePoolRetryTokens("anydoor-auto", "anydoor", notTruncated, 2048), null, "推理污染不重试");
+  assert.equal(freePoolRetryTokens("default", "llm", truncated, 2048), null, "付费模型不触发");
+  assert.equal(freePoolRetryTokens("glm-5.3-flash", "zhipu", truncated, 2048), null, "其他免费/付费服务不触发");
+  assert.equal(freePoolRetryTokens("anydoor-auto", "anydoor", truncated, 8192), null, "已达上限不再增额");
 });
