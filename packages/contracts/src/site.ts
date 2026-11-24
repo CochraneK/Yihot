@@ -367,6 +367,29 @@ export interface HotResponse {
   entries: HotEntryView[];
 }
 
+/** 归档榜单里的一条快照：来自当天 hot_daily.entries，字段稳定且足以回看与跳转事件页。 */
+export interface HotArchiveEntry {
+  rank: number;
+  title: string;
+  storyPublicId: string | null;
+  heat: number;
+  badges: Array<"surge" | "new" | "rising">;
+  participantCount: number;
+  sourceCount: number;
+}
+
+/** 一天的热榜快照（北京时间日期 YYYY-MM-DD 为唯一键）。 */
+export interface HotArchiveDay {
+  day: string;
+  computedAt: string;
+  entries: HotArchiveEntry[];
+}
+
+/** 全部历史热榜，按日期倒序。纯读 hot_daily，零模型成本。 */
+export interface HotArchiveResponse {
+  days: HotArchiveDay[];
+}
+
 export interface HeatPoint {
   hour: string;
   heat: number;
