@@ -13,7 +13,7 @@ import { loadTimeline } from "@aihot/backend/publication/timeline";
 import { loadStoryFollowups } from "@aihot/backend/publication/followups";
 import { loadDevelopments, loadGroupReports } from "@aihot/backend/publication/groups";
 import { loadTopicTags } from "@aihot/backend/publication/topics";
-import { loadHotStrip } from "@aihot/backend/events/hot-read";
+import { loadHotArchive, loadHotStrip } from "@aihot/backend/events/hot-read";
 import { loadRecords } from "@aihot/backend/records/read";
 import { loadPeerDirectory } from "@aihot/backend/peers/directory";
 import { loadChangelog, siteMeta } from "@aihot/backend/site/meta";
@@ -285,6 +285,12 @@ export function registerSite(app: FastifyInstance) {
   app.get("/api/site/hot", siteHandler(async (req, reply) => {
     const data = await loadHot();
     return sendJsonWithEtag(req, reply, data, { etagPrefix: "hot", cacheControl: "public, max-age=30, s-maxage=30" });
+  }));
+
+  app.get("/api/site/hot/archive", siteHandler(async (req, reply) => {
+    // 历史热榜归档：纯读 hot_daily 快照，每天结算一次，缓存可放宽到十分钟。
+    const data = await loadHotArchive();
+    return sendJsonWithEtag(req, reply, data, { etagPrefix: "hot-archive", cacheControl: "public, max-age=60, s-maxage=600" });
   }));
 
   app.get("/api/site/stories/:publicId", siteHandler(async (req, reply) => {
