@@ -35,6 +35,9 @@ const ROWS: Row[] = [
   { to: "/agent", label: "Agent", icon: <IconPlug size={18} /> },
   ...(FEATURES.leaderboard ? [{ to: "/leaderboard", label: "模型榜", icon: <IconChart size={18} /> }] : []),
   ...(FEATURES.codexResetMonitor ? [{ to: "/codex-reset", label: "Tibo重置监控", icon: <IconHistory size={18} /> }] : []),
+  // 管理入口排在最后：读者用不到，只有维护者会往下翻找。文案用「后台管理」而非「登录」，
+  // 避免读者误以为阅读需要账号。桌面侧栏对应放在订阅按钮下方（components/shell/Sidebar.tsx）。
+  { to: "/admin/login", label: "后台管理", icon: <IconShield size={18} /> },
 ];
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (

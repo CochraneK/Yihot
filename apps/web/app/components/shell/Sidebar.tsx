@@ -6,7 +6,7 @@ import { useChangelogSeen } from "../../lib/local-state";
 import { SIDEBAR, tabIsActive, type NavItem } from "./nav";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { Wordmark } from "../../components/Logo";
-import { IconMail } from "../icons";
+import { IconMail, IconShield } from "../icons";
 
 /** True while the changelog has an entry newer than the one this reader last opened. */
 export function useChangelogDot(latestVersion: string | null): boolean {
@@ -69,6 +69,15 @@ export function Sidebar({ changelogVersion }: { changelogVersion: string | null 
         >
           <IconMail size={14} />
           订阅更新
+        </Link>
+        {/* 管理入口刻意做成次级链接：读者不需要登录，只有维护者会找它。
+            Label 用「后台管理」而不是「登录」，避免读者误以为阅读需要账号。 */}
+        <Link
+          to="/admin/login"
+          className="flex h-7 items-center justify-center gap-1.5 rounded-control text-[11.5px] text-ink-4 transition-colors hover:bg-bg-sunk hover:text-ink-2"
+        >
+          <IconShield size={13} />
+          后台管理
         </Link>
         <ThemeSwitch className="mx-1" />
         {SITE.icp && (
